@@ -1,0 +1,24 @@
+test def:
+$def key1 test2.txt
+test regular text          : 56.8 55 ~`!@#%^&*()<>?{}|[]\-=,./ hello there	key1
+test plain                 : $key1
+test brackets              : $key1(foo)
+test plain brackets        : $(key1)
+test plain brackets chain  : $(key1)foo
+test escape with backslash : \$key1
+test escape with double    : $$key1
+test quotes                : "$key1"
+test complex               : printf("$key1\n");
+test key2                  : $key1$key2
+test include:
+$include test2.txt
+test key2 again            : $key1$key2
+$def key3 test2
+test indirect include:
+$include $(key3).txt
+test import:
+$import defs.txt
+test imported defs         : $key4
+$def key0 derived-value
+test inherit:
+$inherit base.txt

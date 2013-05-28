@@ -1,0 +1,9 @@
+$def key0 base-value
+-----------
+base header
+-----------
+$DERIVED
+-----------
+base footer
+-----------
+key0 now has value: $key0

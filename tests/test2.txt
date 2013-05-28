@@ -1,0 +1,2 @@
+$def key2 !!!!
+included text which should appear in the output of the including output

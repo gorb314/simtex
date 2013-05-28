@@ -1,0 +1,15 @@
+$inherit base.htm
+$def TITLE 			MyTitle
+$def DESCRIPTION	MyDescription
+$def KEYWORDS		keyword0, keyword1, keyword2
+$def AUTHOR			Chris Venter
+$def COPYRIGHT		Copyright $AUTHOR 2013, Licensed as WTFPL
+$def STYLESHEETS	<link rel="stylesheet" href="style.css" />
+<h1>Hello World!</h1>
+<p>Lorwm ipsum...</p>
+$ifdef key
+<p>Should not be visible</p>
+$endif
+$ifdef TITLE
+<p>Should be visible</p>
+$endif

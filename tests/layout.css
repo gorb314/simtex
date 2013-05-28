@@ -1,0 +1,33 @@
+* { border: 0; margin: 0; padding: 0; }
+
+$def footerheight		100px
+$def bodywidth			800px
+html {
+	position: relative;
+}
+body {
+	max-width: $bodywidth;
+	height: 100%;
+	margin: 0 0 0 $footerheight;
+}
+footer {
+	height: $footerheight;
+}
+
+$def color1		#fff
+$def color2		#f00
+$def color3		#0f0
+$def color4		#00f
+body {
+	background-color: $color1;
+	color: $color2;
+}
+article {
+	background-color: $color3;
+	color: $color4;
+}
+footer {
+	background-color: $color3;
+	color: $color4;
+}
+

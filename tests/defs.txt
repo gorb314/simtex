@@ -1,0 +1,3 @@
+$def key4 		key4 is now defined
+text which should not appear in the importing output
+
