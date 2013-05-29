@@ -8,7 +8,16 @@
 #include <sstream>
 
 #ifdef DEBUG
-#define LOG(ARG...)		std::clog<<ARG
+// use extended ascii to demarcate output
+// to do this, use the utf-8 encoding of the extended ascii
+// to do *this*, first find the unicode of the extended ascii
+// use the "OEM Code Page 437 Unicode Mapping" on http://www.on-time.com/rtos-32-docs/rtfiles-32/reference-manual/code-page.htm
+// then use http://www.endmemo.com/unicode/unicodeconverter.php and enter the escaped unicode and calculte, then grab the 
+// utf-8 code and embed it.
+// can we friggin automate this please? ie. exASCII(number) -> utf-8 string?
+#define STARTBLOCK "\xc2\xab"
+#define STOPBLOCK  "\xc2\xbb"
+#define LOG(ARG...)		std::clog<<STARTBLOCK<<ARG<<STOPBLOCK
 #define TRACE(ARG...)	std::cerr<<"DBG: "<<ARG<<std::endl;
 #else
 #define LOG(...)
@@ -41,6 +50,7 @@ is popped from the stack, the next Context wakes up, and resumes its parsing.
 */
 struct Context
 {
+	std::string name;
 	// defkey is used to remember the current $def key
 	std::string defkey;
 	// env represents all the key -> value mappings
@@ -60,8 +70,9 @@ struct Context
 	// if file is not null, the buffer is being read from the file
 	FILE* file;
 	
-	Context(YY_BUFFER_STATE b, FILE* f = NULL, int a = 0)
-	: buffer(b)
+	Context(const std::string& n, YY_BUFFER_STATE b, FILE* f = NULL, int a = 0)
+	: name(n)
+	, buffer(b)
 	, file(f)
 	, action(a)
 	, base(a == Inherit)
@@ -179,11 +190,11 @@ void printstate();
 <<EOF>>			{					// match end of file
 					TRACE("<<EOF>>");
 					if (popbuffer()) yyterminate();
-		        }
+		        }///////////////////////////////////////
 [\$\\]\$		{					// match "$$" or "\$"
 					TRACE("replacing escaped $");
 					OUTPUT('$');
-				}
+				}///////////////////////////////////////
 \$\([a-zA-Z_]+[a-zA-Z0-9_]*\)	{	// match "$(...)"
 					std::string text = std::string(yytext);
 					text = text.substr(2, text.length()-3); // strip the $( and )
@@ -195,7 +206,7 @@ void printstate();
 					text = text.substr(1); // strip the $
 					TRACE("$key reference ["<<text<<"]");
 					OUTPUT(value(text));
-				}
+				}///////////////////////////////////////
 \$def[ \t]+		{					// match "$def", eating up any trailing whitespace
 					TRACE("found $def");
 					pushstate(DEFKEY);
@@ -208,67 +219,63 @@ void printstate();
 					setstate(DEFVAL);
 					pushstring(text, DefineKey);
 				}
-<DEFVAL>.*\n	{					// match the rest of the line
+<DEFVAL>.*\n	{					// match the rest of the line (eat the newline)
 					std::string text = std::string(yytext, strlen(yytext)-1);
 					TRACE("def value text ["<<text<<"]");
 					popstate(); // ex-DEFVAL
 					pushstring(text, DefineValue);
-				}
+				}///////////////////////////////////////
 \$include[ \t]+	{					// match "$include", eating up any trailing whitespace
 					TRACE("found $include");
 					pushstate(INCLUDE);
 				}
-<INCLUDE>.*\n	{					// match the rest of the line
+<INCLUDE>.*\n	{					// match the rest of the line (eat the newline)
 					std::string text = std::string(yytext, strlen(yytext)-1);
 					TRACE("include text ["<<text<<"]");
 					popstate(); // ex-INCLUDE
 					pushstring(text, Include | Filename);
-				}
+				}///////////////////////////////////////
 \$import[ \t]+	{					// match "$import", eating up any trailing whitespace
 					TRACE("found $import");
 					pushstate(IMPORT);
 				}
-<IMPORT>.*\n	{					// match the rest of the line
+<IMPORT>.*\n	{					// match the rest of the line (eat the newline)
 					std::string text = std::string(yytext, strlen(yytext)-1);
 					TRACE("import text ["<<text<<"]");
 					popstate(); // ex-IMPORT
 					pushstring(text, Import | Filename);
-				}
+				}///////////////////////////////////////
 \$inherit[ \t]+	{					// match "$inherit", eating up any trailing whitespace
 					TRACE("found $inherit");
 					pushstate(INHERIT);
 				}
-<INHERIT>.*\n	{					// match the rest of the line
+<INHERIT>.*\n	{					// match the rest of the line (eat the newline)
 					std::string text = std::string(yytext, strlen(yytext)-1);
 					TRACE("inherit text ["<<text<<"]");
 					popstate(); // ex-INHERIT
 					pushstring(text, Inherit | Filename);
-				}
+				}///////////////////////////////////////
 \$ifdef[ \t]+	{					// match "$ifdef", eating up any trailing whitespace
 					TRACE("found $ifdef");
 					pushstate(IFDEF);
 				}
-<IFDEF>.*\n		{					// match the rest of the line
+<IFDEF>.*\n		{					// match the rest of the line (eat the newline)
 					std::string text = std::string(yytext, strlen(yytext)-1);
 					TRACE("ifdef text ["<<text<<"]");
 					popstate(); // ex-IFDEF
 					pushstring(text, Ifdef | Condition);
 				}
-<ENDIF>.		{					// matches any character in endif mode
+<ENDIF>.|\n		{					// matches any character including newline in endif mode
 					// discard active endif block
-					std::clog<<"{"<<yytext<<"}";
 				}
-<ENDIF>$endif[ \t]*\n {				// matches active $endif line
+<ENDIF>$endif[ \t]*\n {				// matches active $endif line (eat the newline)
 					TRACE("found active endif");
 					setstate(INITIAL);
 				}
-$endif[ \t]*\n	{		 			// matches $endif line
+$endif[ \t]*\n	{		 			// matches $endif line (eat the newline)
 					TRACE("found inactive endif");
-				}					
-.				{					// match any leftover character
-					OUTPUT(yytext); 
-				}
-\n				{					// match the end-of-line
+				}///////////////////////////////////////					
+.|\n			{					// match any leftover character (including newline)
 					OUTPUT(yytext); 
 				}
 %%
@@ -321,7 +328,7 @@ bool nextfile()
 		std::cerr<<"ERR: Failed to open file ["<<filename<<"]"<<std::endl;
 		exit(1);
 	}
-	stack.push_back(new Context(yy_create_buffer(f, YY_BUF_SIZE), f));
+	stack.push_back(new Context(filename, yy_create_buffer(f, YY_BUF_SIZE), f));
 	pushstate(INITIAL);
 	return true;
 }
@@ -329,12 +336,15 @@ bool nextfile()
 int popbuffer()
 {
 	Context* context = stack.back();
-	TRACE("popping stack, size is "<<stack.size());
+	std::string value = context->output.str();
+	// chop the trailing newline(s), if any
+	value = value.substr(0, value.find_last_of("\n"));
+	TRACE("popping context ["<<context->name<<"]");
 	stack.pop_back();
 	if (stack.empty())
 	{
 		TRACE("output:::::::::");
-		std::cout<<context->output.str()<<std::flush;
+		std::cout<<value<<std::endl; // TODO: configure the trailing newline (like -n?)
 		TRACE("stack is empty");
 		if (!nextfile())
 		{
@@ -342,10 +352,11 @@ int popbuffer()
 			return 1;
 		}
 	}
+	TRACE("current context is now ["<<current().name<<"]");
+	TRACE("current output is ["<<current().output.str()<<"]");
 	yy_switch_to_buffer(current().buffer);
 	popstate();
 	copy(context, stack.back());
-	std::string value = context->output.str();
 	switch (current().action)
 	{
 		case DefineKey:
@@ -374,7 +385,7 @@ int popbuffer()
 		case Inherit:
 			TRACE("adding $DERIVED output ["<<value<<"]");
 			// note, we chop the trailing newline, so that we don't have any unwanted spacing
-			current().env["DERIVED"] = value.substr(0, value.length()-1);
+			current().env["DERIVED"] = value; //value.substr(0, value.length()-1);
 			break;
 		case Include:
 			TRACE("including output ["<<value<<"]");
@@ -398,24 +409,28 @@ int popbuffer()
 			break;
 	}
 	delete context;
+	/*
 	printstack();
-	TRACE("current buffer is "<<YY_CURRENT_BUFFER);
 	printstate();
+	TRACE("current buffer is "<<YY_CURRENT_BUFFER);
+	*/
 	return 0;
 }
 
 void pushstring(const std::string& string, int action)
 {
 	TRACE("pushing string buffer");
-    current().buffer = YY_CURRENT_BUFFER;
-    current().action = action;
-    stack.push_back(new Context(yy_scan_string(string.c_str())));
-    //
-    // this is already done by yy_scan_string: yy_switch_to_buffer(current().buffer);
+	current().buffer = YY_CURRENT_BUFFER;
+	current().action = action;
+	stack.push_back(new Context("String", yy_scan_string(string.c_str())));
+	//
+	// this is already done by yy_scan_string: yy_switch_to_buffer(current().buffer);
 	pushstate(INITIAL);
+	/*
 	printstack();
 	printstate();
 	TRACE("current buffer is "<<YY_CURRENT_BUFFER);
+	*/
 }
 void pushfile(const std::string& filename, int action)
 {
@@ -428,13 +443,15 @@ void pushfile(const std::string& filename, int action)
     	std::cerr<<"ERR: Failed to open included file ["<<filename<<"]"<<std::endl;
     	exit(1);
     }
-    stack.push_back(new Context(yy_create_buffer(f, YY_BUF_SIZE), f));
+    stack.push_back(new Context(filename, yy_create_buffer(f, YY_BUF_SIZE), f));
     //
     yy_switch_to_buffer(current().buffer);
 	pushstate(INITIAL);
+    /*
 	printstack();
 	printstate();
 	TRACE("current buffer is "<<YY_CURRENT_BUFFER);
+	*/
 }
 void insertfile(const std::string& filename, int action)
 {
@@ -447,13 +464,15 @@ void insertfile(const std::string& filename, int action)
     	exit(1);
     }
     std::vector<Context*>::iterator i = stack.end() - 1;
-	stack.insert(i, new Context(yy_create_buffer(f, YY_BUF_SIZE), f, action));
+	stack.insert(i, new Context(filename, yy_create_buffer(f, YY_BUF_SIZE), f, action));
 	//
     yy_switch_to_buffer(current().buffer);
 	pushstate(INITIAL);
+	/*
 	printstack();
 	printstate();
 	TRACE("current buffer is "<<YY_CURRENT_BUFFER);
+	*/
 }
 
 void usage(const char* self, int ret)
@@ -497,7 +516,7 @@ int main(int argc, char** argv)
 	{
 		// if no filelist was specified, use stdin. This is already set up for us by flex
 		TRACE("no filelist, using stdin");
-		stack.push_back(new Context(YY_CURRENT_BUFFER));
+		stack.push_back(new Context("STDIN", YY_CURRENT_BUFFER));
 	}
 	else
 	{
