@@ -1,5 +1,11 @@
 %{
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <getopt.h>
+#include <libgen.h>
+
 #include <iostream>
 #include <string>
 #include <map>
@@ -51,6 +57,7 @@ is popped from the stack, the next Context wakes up, and resumes its parsing.
 struct Context
 {
 	std::string name;
+	std::string path;
 	// defkey is used to remember the current $def key
 	std::string defkey;
 	// env represents all the key -> value mappings
@@ -70,8 +77,9 @@ struct Context
 	// if file is not null, the buffer is being read from the file
 	FILE* file;
 	
-	Context(const std::string& n, YY_BUFFER_STATE b, FILE* f = NULL, int a = 0)
+	Context(const std::string& n, const std::string& p, YY_BUFFER_STATE b, FILE* f = NULL, int a = 0)
 	: name(n)
+	, path(p)
 	, buffer(b)
 	, file(f)
 	, action(a)
@@ -85,6 +93,7 @@ struct Context
 	}
 };
 
+std::vector<std::string> path;
 std::vector<std::string> files;
 std::vector<Context*> stack;
 
@@ -106,9 +115,9 @@ void printstack()
 
 /* These functions either suspend (push/insert) or wakeup (pop) the contexts in the stack */
 int popbuffer();
-void pushfile(const std::string& filename, int action);
 void pushstring(const std::string& string, int action);
-void insertfile(const std::string& filename, int action);
+void pushfile(std::string filename, int action);
+void insertfile(std::string filename, int action);
 
 /* This copies the env keyvalues from a to b.
 If b is marked as an inherited (ie. base) context, the keys are added to its derived
@@ -185,16 +194,27 @@ void printstate();
 %x INHERIT
 %x IFDEF
 %x ENDIF
+%x COMMENT
 %option stack
 %%
 <<EOF>>			{					// match end of file
 					TRACE("<<EOF>>");
 					if (popbuffer()) yyterminate();
 		        }///////////////////////////////////////
-[\$\\]\$		{					// match "$$" or "\$"
+\$\$			{					// match "$$"
 					TRACE("replacing escaped $");
 					OUTPUT('$');
 				}///////////////////////////////////////
+^\\\$/[^$]		{					// match \$ at start of line, unless followed by another $
+					setstate(COMMENT);
+				}
+\\\$/[^$]		{					// match \$ unless followed by another $
+					OUTPUT('\n'); // add a newline, since the original line is not empty
+					setstate(COMMENT);
+				}
+<COMMENT>.*\n	{					// eat the rest of the line
+					setstate(INITIAL);
+				}
 \$\([a-zA-Z_]+[a-zA-Z0-9_]*\)	{	// match "$(...)"
 					std::string text = std::string(yytext);
 					text = text.substr(2, text.length()-3); // strip the $( and )
@@ -314,21 +334,85 @@ void printstate()
 #endif
 }
 
+FILE* checkfile(const std::string& fullname, std::string* nameout, std::string* pathout)
+{
+	TRACE("attempting to open file ["<<fullname<<"]");
+	FILE* f = NULL;
+	char* fn = strdup(fullname.c_str());
+	struct stat buf;
+	if (stat(fn, &buf) == 0)
+	{
+		if (S_ISREG(buf.st_mode))
+		{
+			f = fopen(fn, "r");
+			if (f)
+			{
+				size_t s = fullname.find_last_of("/");
+				*pathout = fullname.substr(0, s);
+				*nameout = fullname.substr(s+1, fullname.length()-s-1);
+				TRACE("success: filename ["<<*nameout<<"] pathname ["<<*pathout<<"]");
+				goto done;
+			}
+			else
+			{
+				TRACE("could not open ["<<fullname<<"]");
+			}
+		}
+		else
+		{
+			TRACE("not a file ["<<fullname<<"]");
+		}
+	}
+	else
+	{
+		TRACE("could not stat ["<<fullname<<"]");
+	}
+done:
+	free(fn);
+	return f;
+}
+
+/* this looks for the filename in the search path, as well as in the accumulated
+context path. It returns an open FILE descriptor for the first accessible file it finds,
+or NULL if none could be found.
+*/
+FILE* resolvefile(const std::string& filename, std::string* nameout, std::string* pathout)
+{
+	FILE* f = NULL;
+	// look through the path
+	for (std::vector<std::string>::iterator p = path.begin(); p != path.end(); ++p)
+	{
+		std::string fullname = *p + '/' + filename;
+		f = checkfile(fullname, nameout, pathout);
+		if (f)
+			goto done;
+	}
+	// look through the contexts
+	for (std::vector<Context*>::iterator s = stack.begin(); s != stack.end(); ++s)
+	{
+		std::string fullname = (*s)->path + '/' + filename;
+		f = checkfile(fullname, nameout, pathout);
+		if (f)
+			goto done;
+	}
+done:
+	return f;
+}
+
 bool nextfile()
 {
 	// check whether the filelist is empty
 	if (files.empty()) return false;
 	std::string filename = files.back();
 	files.pop_back();
-	TRACE("opening list file ["<<filename<<"]");
-	FILE* f = NULL;
-	f = (filename == "-") ? stdin : fopen(filename.c_str(), "r");
+	std::string pathname;
+	FILE* f = (filename == "-") ? stdin : resolvefile(filename, &filename, &pathname);
 	if (!f)
 	{
 		std::cerr<<"ERR: Failed to open file ["<<filename<<"]"<<std::endl;
 		exit(1);
 	}
-	stack.push_back(new Context(filename, yy_create_buffer(f, YY_BUF_SIZE), f));
+	stack.push_back(new Context(filename, pathname, yy_create_buffer(f, YY_BUF_SIZE), f));
 	pushstate(INITIAL);
 	return true;
 }
@@ -422,7 +506,7 @@ void pushstring(const std::string& string, int action)
 	TRACE("pushing string buffer");
 	current().buffer = YY_CURRENT_BUFFER;
 	current().action = action;
-	stack.push_back(new Context("String", yy_scan_string(string.c_str())));
+	stack.push_back(new Context("String", "", yy_scan_string(string.c_str())));
 	//
 	// this is already done by yy_scan_string: yy_switch_to_buffer(current().buffer);
 	pushstate(INITIAL);
@@ -432,18 +516,19 @@ void pushstring(const std::string& string, int action)
 	TRACE("current buffer is "<<YY_CURRENT_BUFFER);
 	*/
 }
-void pushfile(const std::string& filename, int action)
+void pushfile(std::string filename, int action)
 {
 	TRACE("pushing file buffer");
-    current().buffer = YY_CURRENT_BUFFER; // back up the current buffer
-    current().action = action; // remember the action
-    FILE* f = fopen( filename.c_str(), "r" );
-    if (!f)
-    {
+	std::string pathname;
+	FILE* f = resolvefile(filename, &filename, &pathname);
+	if (!f)
+	{
     	std::cerr<<"ERR: Failed to open included file ["<<filename<<"]"<<std::endl;
     	exit(1);
     }
-    stack.push_back(new Context(filename, yy_create_buffer(f, YY_BUF_SIZE), f));
+    current().buffer = YY_CURRENT_BUFFER; // back up the current buffer
+    current().action = action; // remember the action
+    stack.push_back(new Context(filename, pathname, yy_create_buffer(f, YY_BUF_SIZE), f));
     //
     yy_switch_to_buffer(current().buffer);
 	pushstate(INITIAL);
@@ -453,18 +538,19 @@ void pushfile(const std::string& filename, int action)
 	TRACE("current buffer is "<<YY_CURRENT_BUFFER);
 	*/
 }
-void insertfile(const std::string& filename, int action)
+void insertfile(std::string filename, int action)
 {
 	TRACE("inserting file buffer");
 	// insert the requested buffer *behind* the current one
-    FILE* f = fopen(filename.c_str(), "r");
+	std::string pathname;
+	FILE* f = resolvefile(filename, &filename, &pathname);
     if (!f)
     {
     	std::cerr<<"ERR: Failed to open included file ["<<filename<<"]"<<std::endl;
     	exit(1);
     }
     std::vector<Context*>::iterator i = stack.end() - 1;
-	stack.insert(i, new Context(filename, yy_create_buffer(f, YY_BUF_SIZE), f, action));
+	stack.insert(i, new Context(filename, pathname, yy_create_buffer(f, YY_BUF_SIZE), f, action));
 	//
     yy_switch_to_buffer(current().buffer);
 	pushstate(INITIAL);
@@ -473,6 +559,24 @@ void insertfile(const std::string& filename, int action)
 	printstate();
 	TRACE("current buffer is "<<YY_CURRENT_BUFFER);
 	*/
+}
+
+void addpath(const std::string& base, const std::string& rel)
+{
+	char* p = 0;
+	if (rel.length() > 0 && rel[0] == '/')
+	{
+		// path is an absolute path, so resolve it 
+		p = realpath(rel.c_str(), NULL);
+	}
+	else
+	{
+		// path is not absolute, so append it to base and resolve it
+		p = realpath((base + '/' + rel).c_str(), NULL);
+	}
+	if (p)
+		path.push_back(std::string(p));
+	free(p);
 }
 
 void usage(const char* self, int ret)
@@ -491,12 +595,27 @@ int main(int argc, char** argv)
 	std::cerr.setf(std::ios::unitbuf);
 #endif
 
+	char* cwd = get_current_dir_name();
+	path.push_back(std::string(cwd));
+	
+	Context setup("SETUP", "", 0);
 	optind = 0;
 	int c = 0;
-	while ((c = getopt (argc, argv, "")) != -1)
+	while ((c = getopt (argc, argv, "hD:I:")) != -1)
 	{
 		switch (c)
 		{
+			case 'h':
+				usage(argv[0], 0);
+				break;
+			case 'D':
+				// add the key to the setup context:
+				setup.env[optarg] = "";
+				break;
+			case 'I':
+				// add a path to the search path
+				addpath(cwd, optarg);
+				break;
 			// TODO: add future options
 			/* these could include:
 			-d			: add comments for debugging
@@ -511,12 +630,21 @@ int main(int argc, char** argv)
 				break;
 		}
 	}
+	free(cwd);
+	
+#ifdef DEBUG
+	TRACE("path:");
+	for (std::vector<std::string>::iterator i = path.begin(); i != path.end(); ++i)
+	{
+		std::cerr<<"\t"<<*i<<std::endl;
+	}
+#endif
 	
 	if (optind == argc)
 	{
 		// if no filelist was specified, use stdin. This is already set up for us by flex
 		TRACE("no filelist, using stdin");
-		stack.push_back(new Context("STDIN", YY_CURRENT_BUFFER));
+		stack.push_back(new Context("STDIN", "", YY_CURRENT_BUFFER));
 	}
 	else
 	{
@@ -530,6 +658,7 @@ int main(int argc, char** argv)
 		}
 		nextfile();
 	}
+	copy(&setup, &current());
 	yy_switch_to_buffer(current().buffer);
 	
     TRACE("initting with buffer "<<current().buffer);

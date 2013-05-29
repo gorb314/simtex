@@ -7,7 +7,7 @@ SIMTEX = ../src/simtex
 all: $(TARGETS)
 
 test.out: test.txt simtex
-	$(SIMTEX) < $< > test.out 2>&1
+	$(SIMTEX) -I sub < $< > test.out 2>&1
 
 %.html: %.htm simtex
 	$(SIMTEX) < $< > $@

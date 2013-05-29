@@ -123,7 +123,7 @@ bash/Makefile variable substitution, but without the headaches. Mission complete
 
 ## TODOs and Nice-to-haves
 
-At the moment the entire program fits into one file that is 350 lines long. The code only uses `flex`, and not `bison`, because we are not doing any complicated expression parsing, only simple evaluations and substitutions.
+At the moment the entire program fits into one file that is ~~350~~about 700 lines long. The code only uses `flex`, and not `bison`, because we are not doing any complicated expression parsing, only simple evaluations and substitutions.
 
 These items also need some clarification as to how best to implement them, before I'll proceed.
 
