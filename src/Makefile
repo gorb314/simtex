@@ -1,6 +1,6 @@
 TARGETS = simtex
 
-OPTIONS = -g -DDEBUG
+OPTIONS = #-g -DDEBUG
 
 all: $(TARGETS)
 

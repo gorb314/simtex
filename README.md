@@ -94,6 +94,17 @@ Basic ifdef support. If `KEY` is not defined, all text between `$ifdef` and `$en
 is discarded and not evaluated. If `KEY` is defined, all text between `$ifdef` and `$endif` is
 included and processed as normal.
 
+	\$... 
+
+Single line comment. This allows you to easily comment out a $def, for example. All text
+from the `\$` up to the end of the line is discarded. Also, if the `\$` is at the start of the line,
+then the entire line is elided from the output.
+
+	/$...$/
+
+Multi-line comment. Everything between the markers is discarded. As with C, multi-line comments
+cannot be nested.
+
 ## More Examples
 
 Look in the `src/tests` subdirectory.

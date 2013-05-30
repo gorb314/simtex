@@ -8,6 +8,8 @@ test plain brackets chain  : $(key1)foo
 test comment \$$           : \$key1
 test line comment \$$      :
 \$key1
+test multiline comment     : /$ this text
+should disappear $/this text should be visible
 test escape with double    : $$key1
 test quotes                : "$key1"
 test complex               : printf("$key1\n");

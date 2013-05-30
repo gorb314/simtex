@@ -195,6 +195,7 @@ void printstate();
 %x IFDEF
 %x ENDIF
 %x COMMENT
+%x MULTICOMMENT
 %option stack
 %%
 <<EOF>>			{					// match end of file
@@ -214,6 +215,15 @@ void printstate();
 				}
 <COMMENT>.*\n	{					// eat the rest of the line
 					setstate(INITIAL);
+				}
+\/\$.*\n		{
+					setstate(MULTICOMMENT);
+				}
+<MULTICOMMENT>\$\/ {
+					setstate(INITIAL);
+				}
+<MULTICOMMENT>.|\n {
+					// ignore multiline comment
 				}
 \$\([a-zA-Z_]+[a-zA-Z0-9_]*\)	{	// match "$(...)"
 					std::string text = std::string(yytext);
