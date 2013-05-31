@@ -1,3 +1,8 @@
+test multiline def:
+$def mkey \
+hello world! \
+this is a multine def
+the multiline def is "$mkey"
 test def:
 $def key1 test2.txt
 test regular text          : 56.8 55 ~`!@#%^&*()<>?{}|[]\-=,./ hello there	key1

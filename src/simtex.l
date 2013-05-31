@@ -45,9 +45,30 @@ enum Action
 	Filename	= 1 << 3,
 	DefineKey	= 1 << 4,
 	DefineValue = 1 << 5,
-	Ifdef		= 1 << 6,
-	Condition	= 1 << 7,
+	AppendValue = 1 << 6,
+	Ifdef		= 1 << 7,
+	Condition	= 1 << 8,
+	ResolveKey	= 1 << 9,
 };
+
+struct Value
+{
+	std::string value;
+	
+	bool global;
+	bool final;
+	
+	Value(const std::string& v = "", bool g = true, bool f = false)
+	: value(v)
+	, global(g)
+	, final(f)
+	{}
+};
+
+std::ostream& operator<<(std::ostream& stream, const Value& value)
+{
+	return stream<<(value.global?"[G]":"")<<(value.final?"[F]":"")<<value.value;
+}
 
 /* Context is used to represent the current parsing state of a specific buffer.
 The buffers are organised as a stack, with the top Context being the active one.
@@ -56,12 +77,13 @@ is popped from the stack, the next Context wakes up, and resumes its parsing.
 */
 struct Context
 {
-	std::string name;
-	std::string path;
+	std::string name; // store the filename
+	std::string path; // store tha pathname
 	// defkey is used to remember the current $def key
 	std::string defkey;
+	std::string defval;
 	// env represents all the key -> value mappings
-	std::map<std::string, std::string> env;
+	std::map<std::string, ::Value> env;
 	// buffer represents the input buffer
 	YY_BUFFER_STATE buffer;
 	// output is the parsed output of the context
@@ -73,7 +95,6 @@ struct Context
 	// if the context is marked as inherited, the derived set
 	// stores all env keys which have been specialised by derived contexts,
 	// and are therefore immutable by the inherited context
-	std::set<std::string> derived;
 	// if file is not null, the buffer is being read from the file
 	FILE* file;
 	
@@ -94,8 +115,19 @@ struct Context
 };
 
 std::vector<std::string> path;
-std::vector<std::string> files;
 std::vector<Context*> stack;
+
+struct File
+{
+	std::string filename;
+	int action;
+	
+	File(const std::string& fn, int a)
+	: filename(fn)
+	, action(a)
+	{}
+};
+std::vector<File> files;
 
 Context& current()
 {
@@ -126,12 +158,19 @@ by a derived context, so that overwriting by the base context can be prevented.
 */
 void copy(Context* a, Context* b)
 {
-	for (std::map<std::string, std::string>::iterator i = a->env.begin(); i != a->env.end(); ++i)
+	for (std::map<std::string, Value>::iterator i = a->env.begin(); i != a->env.end(); ++i)
 	{
-		TRACE("copying key ["<<i->first<<"] = '"<<i->second<<"'");
-		b->env[i->first] = i->second;
-		if (b->base)
-			b->derived.insert(i->first);
+		if (i->second.global)
+		{
+			TRACE("copying key ["<<i->first<<"] = '"<<i->second<<"'");
+			b->env[i->first] = i->second;
+			if (b->base)
+				b->env[i->first].final = true;
+		}
+		else
+		{
+			TRACE("ignoring local key ["<<i->first<<"]");
+		}
 	}
 	if (b->base)
 		TRACE("marking all as derived");
@@ -142,7 +181,7 @@ bool defined(const std::string& key)
 	// start at the back, and look for the key
 	for (std::vector<Context*>::reverse_iterator s = stack.rbegin(); s != stack.rend(); ++s)
 	{
-		std::map<std::string, std::string>::iterator i = (*s)->env.find(key);
+		std::map<std::string, ::Value>::iterator i = (*s)->env.find(key);
 		if (i != (*s)->env.end()) return true;
 	}
 	return false;
@@ -153,30 +192,34 @@ The stack is traversed from top to bottom, and if no key is found, value() retur
 the empty string, the key name verbatim or throws an error, depending on the configuration.
 TODO: implement this!
 */
-std::string value(const std::string& key)
+std::string resolve(const std::string& key)
 {
 	// start at the back, and look for the key[1:]
 	// TODO: fix this so that the caller takes care of cleanup up the name!
 	for (std::vector<Context*>::reverse_iterator s = stack.rbegin(); s != stack.rend(); ++s)
 	{
-		std::map<std::string, std::string>::iterator i = (*s)->env.find(key);
-		if (i != (*s)->env.end()) return i->second;
+		std::map<std::string, ::Value>::iterator i = (*s)->env.find(key);
+		if (i != (*s)->env.end()) return i->second.value;
 	}
 	return "";
 }
-/* Store will overwrite the key with name current->defkey using the provided value.
+/* Store will overwrite the key with name current->defkey using the current defval value.
 This is prevented when the key is in the derived set, however.
 */
-void store(const std::string& value)
+void store()
 {
-	std::set<std::string>::iterator i = current().derived.find(current().defkey);
-	if (i == current().derived.end())
+	std::map<std::string, Value>::iterator i = current().env.find(current().defkey);
+	if (i != current().env.end() && i->second.final)
 	{
-		TRACE("storing ["<<current().defkey<<"] = '"<<value<<"'");
-		current().env[current().defkey] = value;
+		// the item is in the list AND marked final
+		TRACE("ignoring derived keyvalue");
 	}
 	else
-		TRACE("ignoring derived keyvalue");
+	{
+		// the item is not in the list, or if it is, it is marked as not final
+		TRACE("storing ["<<current().defkey<<"] = '"<<current().defval<<"'");
+		current().env[current().defkey] = current().defval;
+	}
 }
 
 /* These are wrapped functions for yy_xxx_state, to facilitate debugging */
@@ -225,17 +268,18 @@ void printstate();
 <MULTICOMMENT>.|\n {
 					// ignore multiline comment
 				}
-\$\([a-zA-Z_]+[a-zA-Z0-9_]*\)	{	// match "$(...)"
+\$\([^\)]*\)	{					// match "$(...)"
 					std::string text = std::string(yytext);
 					text = text.substr(2, text.length()-3); // strip the $( and )
 					TRACE("$(key) reference ["<<text<<"]");
-					OUTPUT(value(text));
+					pushstring(text, ResolveKey);
+					//OUTPUT(value(text));
 				}
-\$[a-zA-Z_]+[a-zA-Z0-9_]*	{		// match "$..."
+\$[a-zA-Z_]+[a-zA-Z0-9_]*	{		// match "$<KEYNAME>"
 					std::string text = std::string(yytext);
 					text = text.substr(1); // strip the $
 					TRACE("$key reference ["<<text<<"]");
-					OUTPUT(value(text));
+					OUTPUT(resolve(text));
 				}///////////////////////////////////////
 \$def[ \t]+		{					// match "$def", eating up any trailing whitespace
 					TRACE("found $def");
@@ -244,13 +288,22 @@ void printstate();
 <DEFKEY>[^ \t]*[ \t]+ {				// match a run of non-whitespace, followed by whitespace - ie. a single word
 					std::string text = std::string(yytext);
 					size_t b = text.find_last_not_of(" \t");
-					text = text.substr(0, b+1);
+					text[b+1] = 0; // artificially chop the whitespace
 					TRACE("def key text ["<<text<<"]");
 					setstate(DEFVAL);
 					pushstring(text, DefineKey);
 				}
-<DEFVAL>.*\n	{					// match the rest of the line (eat the newline)
-					std::string text = std::string(yytext, strlen(yytext)-1);
+<DEFVAL>.*\\\n	{
+					// append a value to the stored defval
+					// keep going, there is a trailing backslash
+					// retain two newlines: one will be trimmed!
+					std::string text = yytext;
+					text[strlen(yytext)-2] = '\n';
+					TRACE("def value (cont.) ["<<text<<"]");
+					pushstring(text, AppendValue);
+				}
+<DEFVAL>.*		{					// match the rest of the line (eat the newline)
+					std::string text = std::string(yytext, strlen(yytext));
 					TRACE("def value text ["<<text<<"]");
 					popstate(); // ex-DEFVAL
 					pushstring(text, DefineValue);
@@ -304,7 +357,7 @@ void printstate();
 				}
 $endif[ \t]*\n	{		 			// matches $endif line (eat the newline)
 					TRACE("found inactive endif");
-				}///////////////////////////////////////					
+				}///////////////////////////////////////
 .|\n			{					// match any leftover character (including newline)
 					OUTPUT(yytext); 
 				}
@@ -413,15 +466,19 @@ bool nextfile()
 {
 	// check whether the filelist is empty
 	if (files.empty()) return false;
-	std::string filename = files.back();
+	File file = files.back();
 	files.pop_back();
 	std::string pathname;
-	FILE* f = (filename == "-") ? stdin : resolvefile(filename, &filename, &pathname);
+	std::string filename;
+	FILE* f = (file.filename == "-") ? stdin : resolvefile(file.filename, &filename, &pathname);
 	if (!f)
 	{
 		std::cerr<<"ERR: Failed to open file ["<<filename<<"]"<<std::endl;
 		exit(1);
 	}
+	// TODO: check the File::action to decide HOW to include/import the file
+	// possibly this could be used to specify an inherit on the commandline as well.
+	// The problem with import is that we need to carry stuff over from one context to the next?
 	stack.push_back(new Context(filename, pathname, yy_create_buffer(f, YY_BUF_SIZE), f));
 	pushstate(INITIAL);
 	return true;
@@ -431,8 +488,13 @@ int popbuffer()
 {
 	Context* context = stack.back();
 	std::string value = context->output.str();
-	// chop the trailing newline(s), if any
-	value = value.substr(0, value.find_last_of("\n"));
+	// chop the leading and trailing newline, if any
+	size_t s0 = 0;
+	size_t s1 = value.length();
+	if (value[0] == '\n') { s0 += 1; s1-= 1; }
+	if (value[value.length()-1] == '\n') s1 -= 1;
+	value = value.substr(s0, s1);
+	//value = value.substr(0, value.find_last_of("\n"));
 	TRACE("popping context ["<<context->name<<"]");
 	stack.pop_back();
 	if (stack.empty())
@@ -447,7 +509,7 @@ int popbuffer()
 		}
 	}
 	TRACE("current context is now ["<<current().name<<"]");
-	TRACE("current output is ["<<current().output.str()<<"]");
+	//TRACE("current output is ["<<current().output.str()<<"]");
 	yy_switch_to_buffer(current().buffer);
 	popstate();
 	copy(context, stack.back());
@@ -457,9 +519,15 @@ int popbuffer()
 			TRACE("def key ["<<value<<"]");
 			current().defkey = value;
 			break;
+		case AppendValue:
+			TRACE("def value ["<<value<<"]");
+			current().defval += value;
+			break;
 		case DefineValue:
 			TRACE("def value ["<<value<<"]");
-			store(value);
+			current().defval += value;
+			store();
+			current().defval = "";
 			break;
 		case Include | Filename:
 			TRACE("include filename ["<<value<<"]");
@@ -477,9 +545,9 @@ int popbuffer()
 			TRACE("discarding output ["<<value<<"]");
 			break;
 		case Inherit:
-			TRACE("adding $DERIVED output ["<<value<<"]");
+			TRACE("adding $__OUTPUT__ output ["<<value<<"]");
 			// note, we chop the trailing newline, so that we don't have any unwanted spacing
-			current().env["DERIVED"] = value; //value.substr(0, value.length()-1);
+			current().env["__OUTPUT__"] = value; //value.substr(0, value.length()-1);
 			break;
 		case Include:
 			TRACE("including output ["<<value<<"]");
@@ -497,6 +565,10 @@ int popbuffer()
 				TRACE("key ["<<value<<"] is undefined, setting ENDIF");
 				setstate(ENDIF);
 			}
+			break;
+		case ResolveKey:
+			TRACE("resolving key ["<<value<<"]");
+			OUTPUT(resolve(value));
 			break;
 		default:
 			TRACE("discarding output ["<<value<<"]");
@@ -608,10 +680,15 @@ int main(int argc, char** argv)
 	char* cwd = get_current_dir_name();
 	path.push_back(std::string(cwd));
 	
+	// TODO: we need to use this setup context as the lone root of the context stack.
+	// this will allow us to properly suck in the environments from commandline included
+	// files. This will need modification of popbuffer, which will figure out that
+	// we are back to the root, and so need to import/include/inherit the next file
+	// (using nextfile(), or a modification).
 	Context setup("SETUP", "", 0);
 	optind = 0;
 	int c = 0;
-	while ((c = getopt (argc, argv, "hD:I:")) != -1)
+	while ((c = getopt (argc, argv, "-hD:I:i:")) != -1)
 	{
 		switch (c)
 		{
@@ -620,11 +697,19 @@ int main(int argc, char** argv)
 				break;
 			case 'D':
 				// add the key to the setup context:
-				setup.env[optarg] = "";
+				setup.env[optarg].value = "";
 				break;
 			case 'I':
 				// add a path to the search path
 				addpath(cwd, optarg);
+				break;
+			case 'i':
+				// add the file to be imported
+				files.push_back(File(optarg, Import));
+				break;
+			case '\1':
+				// add the file to be included
+				files.push_back(File(optarg, Include));
 				break;
 			// TODO: add future options
 			/* these could include:
@@ -632,8 +717,8 @@ int main(int argc, char** argv)
 			-D CMNT		: use CMNT string before comments (default is "#")
 			-r			: relaxed mode: ignore missing files
 			-s			: strict mode: abort if a key is used but not defined
-			-I PATH		: add the search path for include/import/inherit files
 			-o OUTPUT	: output to the specified file (instead of stdout)
+			-b BASE		: use BASE as an inherited file
 			*/
 			default:
 				usage(argv[0], -1);
@@ -650,24 +735,13 @@ int main(int argc, char** argv)
 	}
 #endif
 	
-	if (optind == argc)
+	if (files.empty())
 	{
 		// if no filelist was specified, use stdin. This is already set up for us by flex
 		TRACE("no filelist, using stdin");
-		stack.push_back(new Context("STDIN", "", YY_CURRENT_BUFFER));
+		files.push_back(File("-", Include));
 	}
-	else
-	{
-		// push the file list onto the stack
-		TRACE("filelist provided");
-		// these will be treated as if each in turn had $include'ed the one after
-		for (int i = argc-1; i >= optind; --i)
-		{
-			TRACE("pushing file ["<<argv[i]<<"]");
-			files.push_back(argv[i]);
-		}
-		nextfile();
-	}
+	nextfile();
 	copy(&setup, &current());
 	yy_switch_to_buffer(current().buffer);
 	
