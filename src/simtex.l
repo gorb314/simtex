@@ -588,7 +588,8 @@ void pushstring(const std::string& string, int action)
 	TRACE("pushing string buffer");
 	current().buffer = YY_CURRENT_BUFFER;
 	current().action = action;
-	stack.push_back(new Context("String", "", yy_scan_string(string.c_str())));
+	// add a newline, to make sure that all commands terminate
+	stack.push_back(new Context("String", "", yy_scan_string((string + "\n").c_str())));
 	//
 	// this is already done by yy_scan_string: yy_switch_to_buffer(current().buffer);
 	pushstate(INITIAL);
